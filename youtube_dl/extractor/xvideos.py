@@ -6,36 +6,73 @@ from .common import InfoExtractor
 from ..compat import compat_urllib_parse_unquote
 from ..utils import (
     clean_html,
-    ExtractorError,
     determine_ext,
+    ExtractorError,
+    int_or_none,
+    parse_duration,
 )
 
 
 class XVideosIE(InfoExtractor):
-    _VALID_URL = r'https?://(?:www\.)?xvideos\.com/video(?P<id>[0-9]+)(?:.*)'
-    _TEST = {
+    _VALID_URL = r'''(?x)
+                    https?://
+                        (?:
+                            (?:www\.)?xvideos\.com/video|
+                            flashservice\.xvideos\.com/embedframe/|
+                            static-hw\.xvideos\.com/swf/xv-player\.swf\?.*?\bid_video=
+                        )
+                        (?P<id>[0-9]+)
+                    '''
+    _TESTS = [{
         'url': 'http://www.xvideos.com/video4588838/biker_takes_his_girl',
         'md5': '14cea69fcb84db54293b1e971466c2e1',
         'info_dict': {
             'id': '4588838',
             'ext': 'mp4',
             'title': 'Biker Takes his Girl',
+            'duration': 108,
             'age_limit': 18,
         }
-    }
+    }, {
+        'url': 'https://flashservice.xvideos.com/embedframe/4588838',
+        'only_matching': True,
+    }, {
+        'url': 'http://static-hw.xvideos.com/swf/xv-player.swf?id_video=4588838',
+        'only_matching': True,
+    }]
 
     def _real_extract(self, url):
         video_id = self._match_id(url)
-        webpage = self._download_webpage(url, video_id)
+
+        webpage = self._download_webpage(
+            'https://www.xvideos.com/video%s/' % video_id, video_id)
 
         mobj = re.search(r'<h1 class="inlineError">(.+?)</h1>', webpage)
         if mobj:
             raise ExtractorError('%s said: %s' % (self.IE_NAME, clean_html(mobj.group(1))), expected=True)
 
-        video_title = self._html_search_regex(
-            r'<title>(.*?)\s+-\s+XVID', webpage, 'title')
-        video_thumbnail = self._search_regex(
-            r'url_bigthumb=(.+?)&amp', webpage, 'thumbnail', fatal=False)
+        title = self._html_search_regex(
+            (r'<title>(?P<title>.+?)\s+-\s+XVID',
+             r'setVideoTitle\s*\(\s*(["\'])(?P<title>(?:(?!\1).)+)\1'),
+            webpage, 'title', default=None,
+            group='title') or self._og_search_title(webpage)
+
+        thumbnails = []
+        for preference, thumbnail in enumerate(('', '169')):
+            thumbnail_url = self._search_regex(
+                r'setThumbUrl%s\(\s*(["\'])(?P<thumbnail>(?:(?!\1).)+)\1' % thumbnail,
+                webpage, 'thumbnail', default=None, group='thumbnail')
+            if thumbnail_url:
+                thumbnails.append({
+                    'url': thumbnail_url,
+                    'preference': preference,
+                })
+
+        duration = int_or_none(self._og_search_property(
+            'duration', webpage, default=None)) or parse_duration(
+            self._search_regex(
+                r'<span[^>]+class=["\']duration["\'][^>]*>.*?(\d[^<]+)',
+                webpage, 'duration', fatal=False))
 
         formats = []
 
@@ -66,7 +103,8 @@ class XVideosIE(InfoExtractor):
         return {
             'id': video_id,
             'formats': formats,
-            'title': video_title,
-            'thumbnail': video_thumbnail,
+            'title': title,
+            'duration': duration,
+            'thumbnails': thumbnails,
             'age_limit': 18,
         }

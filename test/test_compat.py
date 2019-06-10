@@ -13,6 +13,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from youtube_dl.compat import (
     compat_getenv,
     compat_setenv,
+    compat_etree_Element,
     compat_etree_fromstring,
     compat_expanduser,
     compat_shlex_split,
@@ -27,11 +28,11 @@ from youtube_dl.compat import (
 class TestCompat(unittest.TestCase):
     def test_compat_getenv(self):
         test_str = 'тест'
-        compat_setenv('YOUTUBE-DL-TEST', test_str)
-        self.assertEqual(compat_getenv('YOUTUBE-DL-TEST'), test_str)
+        compat_setenv('YOUTUBE_DL_COMPAT_GETENV', test_str)
+        self.assertEqual(compat_getenv('YOUTUBE_DL_COMPAT_GETENV'), test_str)
 
     def test_compat_setenv(self):
-        test_var = 'YOUTUBE-DL-TEST'
+        test_var = 'YOUTUBE_DL_COMPAT_SETENV'
         test_str = 'тест'
         compat_setenv(test_var, test_str)
         compat_getenv(test_var)
@@ -39,7 +40,7 @@ class TestCompat(unittest.TestCase):
 
     def test_compat_expanduser(self):
         old_home = os.environ.get('HOME')
-        test_str = 'C:\Documents and Settings\тест\Application Data'
+        test_str = r'C:\Documents and Settings\тест\Application Data'
         compat_setenv('HOME', test_str)
         self.assertEqual(compat_expanduser('~'), test_str)
         compat_setenv('HOME', old_home or '')
@@ -89,6 +90,12 @@ class TestCompat(unittest.TestCase):
         self.assertEqual(compat_shlex_split('-option "one two"'), ['-option', 'one two'])
         self.assertEqual(compat_shlex_split('-option "one\ntwo" \n -flag'), ['-option', 'one\ntwo', '-flag'])
         self.assertEqual(compat_shlex_split('-val 中文'), ['-val', '中文'])
+
+    def test_compat_etree_Element(self):
+        try:
+            compat_etree_Element.items
+        except AttributeError:
+            self.fail('compat_etree_Element is not a type')
 
     def test_compat_etree_fromstring(self):
         xml = '''

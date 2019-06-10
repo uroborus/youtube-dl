@@ -1,10 +1,10 @@
 from __future__ import unicode_literals
 
+from .common import InfoExtractor
 from .youtube import YoutubeIE
-from .jwplatform import JWPlatformBaseIE
 
 
-class WimpIE(JWPlatformBaseIE):
+class WimpIE(InfoExtractor):
     _VALID_URL = r'https?://(?:www\.)?wimp\.com/(?P<id>[^/]+)'
     _TESTS = [{
         'url': 'http://www.wimp.com/maru-is-exhausted/',
@@ -36,14 +36,11 @@ class WimpIE(JWPlatformBaseIE):
         webpage = self._download_webpage(url, video_id)
 
         youtube_id = self._search_regex(
-            r"videoId\s*:\s*[\"']([0-9A-Za-z_-]{11})[\"']",
+            (r"videoId\s*:\s*[\"']([0-9A-Za-z_-]{11})[\"']",
+             r'data-id=["\']([0-9A-Za-z_-]{11})'),
             webpage, 'video URL', default=None)
         if youtube_id:
-            return {
-                '_type': 'url',
-                'url': youtube_id,
-                'ie_key': YoutubeIE.ie_key(),
-            }
+            return self.url_result(youtube_id, YoutubeIE.ie_key())
 
         info_dict = self._extract_jwplayer_data(
             webpage, video_id, require_title=False)

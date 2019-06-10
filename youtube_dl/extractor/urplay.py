@@ -2,20 +2,36 @@
 from __future__ import unicode_literals
 
 from .common import InfoExtractor
+from ..utils import unified_timestamp
 
 
 class URPlayIE(InfoExtractor):
-    _VALID_URL = r'https?://(?:www\.)?urplay\.se/program/(?P<id>[0-9]+)'
-    _TEST = {
-        'url': 'http://urplay.se/program/190031-tripp-trapp-trad-sovkudde',
-        'md5': '15ca67b63fd8fb320ac2bcd854bad7b6',
+    _VALID_URL = r'https?://(?:www\.)?ur(?:play|skola)\.se/(?:program|Produkter)/(?P<id>[0-9]+)'
+    _TESTS = [{
+        'url': 'https://urplay.se/program/203704-ur-samtiden-livet-universum-och-rymdens-markliga-musik-om-vetenskap-kritiskt-tankande-och-motstand',
+        'md5': 'ff5b0c89928f8083c74bbd5099c9292d',
+        'info_dict': {
+            'id': '203704',
+            'ext': 'mp4',
+            'title': 'UR Samtiden - Livet, universum och rymdens märkliga musik : Om vetenskap, kritiskt tänkande och motstånd',
+            'description': 'md5:5344508a52aa78c1ced6c1b8b9e44e9a',
+            'timestamp': 1513512768,
+            'upload_date': '20171217',
+        },
+    }, {
+        'url': 'https://urskola.se/Produkter/190031-Tripp-Trapp-Trad-Sovkudde',
         'info_dict': {
             'id': '190031',
             'ext': 'mp4',
             'title': 'Tripp, Trapp, Träd : Sovkudde',
             'description': 'md5:b86bffdae04a7e9379d1d7e5947df1d1',
-        }
-    }
+            'timestamp': 1440093600,
+            'upload_date': '20150820',
+        },
+    }, {
+        'url': 'http://urskola.se/Produkter/155794-Smasagor-meankieli-Grodan-i-vida-varlden',
+        'only_matching': True,
+    }]
 
     def _real_extract(self, url):
         video_id = self._match_id(url)
@@ -27,30 +43,17 @@ class URPlayIE(InfoExtractor):
 
         formats = []
         for quality_attr, quality, preference in (('', 'sd', 0), ('_hd', 'hd', 1)):
-            file_rtmp = urplayer_data.get('file_rtmp' + quality_attr)
-            if file_rtmp:
-                formats.append({
-                    'url': 'rtmp://%s/urplay/mp4:%s' % (host, file_rtmp),
-                    'format_id': quality + '-rtmp',
-                    'ext': 'flv',
-                    'preference': preference,
-                })
             file_http = urplayer_data.get('file_http' + quality_attr) or urplayer_data.get('file_http_sub' + quality_attr)
             if file_http:
-                file_http_base_url = 'http://%s/%s' % (host, file_http)
-                formats.extend(self._extract_f4m_formats(
-                    file_http_base_url + 'manifest.f4m', video_id,
-                    preference, '%s-hds' % quality, fatal=False))
-                formats.extend(self._extract_m3u8_formats(
-                    file_http_base_url + 'playlist.m3u8', video_id, 'mp4',
-                    'm3u8_native', preference, '%s-hls' % quality, fatal=False))
+                formats.extend(self._extract_wowza_formats(
+                    'http://%s/%splaylist.m3u8' % (host, file_http), video_id, skip_protocols=['rtmp', 'rtsp']))
         self._sort_formats(formats)
 
         subtitles = {}
         for subtitle in urplayer_data.get('subtitles', []):
             subtitle_url = subtitle.get('file')
             kind = subtitle.get('kind')
-            if subtitle_url or kind and kind != 'captions':
+            if not subtitle_url or (kind and kind != 'captions'):
                 continue
             subtitles.setdefault(subtitle.get('label', 'Svenska'), []).append({
                 'url': subtitle_url,
@@ -61,6 +64,7 @@ class URPlayIE(InfoExtractor):
             'title': urplayer_data['title'],
             'description': self._og_search_description(webpage),
             'thumbnail': urplayer_data.get('image'),
+            'timestamp': unified_timestamp(self._html_search_meta(('uploadDate', 'schema:uploadDate'), webpage, 'timestamp')),
             'series': urplayer_data.get('series_title'),
             'subtitles': subtitles,
             'formats': formats,

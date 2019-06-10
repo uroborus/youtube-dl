@@ -12,20 +12,25 @@ from ..compat import (
 )
 from ..utils import (
     clean_html,
-    unescapeHTML,
+    determine_ext,
     ExtractorError,
+    extract_attributes,
     int_or_none,
     mimetype2ext,
-    determine_ext,
+    smuggle_url,
+    unescapeHTML,
 )
 
-from .brightcove import BrightcoveNewIE
+from .brightcove import (
+    BrightcoveLegacyIE,
+    BrightcoveNewIE,
+)
 from .nbc import NBCSportsVPlayerIE
 
 
 class YahooIE(InfoExtractor):
     IE_DESC = 'Yahoo screen and movies'
-    _VALID_URL = r'(?P<url>(?P<host>https?://(?:[a-zA-Z]{2}\.)?[\da-zA-Z_-]+\.yahoo\.com)/(?:[^/]+/)*(?P<display_id>.+)?-(?P<id>[0-9]+)(?:-[a-z]+)?(?:\.html)?)'
+    _VALID_URL = r'(?P<host>https?://(?:(?P<country>[a-zA-Z]{2})\.)?[\da-zA-Z_-]+\.yahoo\.com)/(?:[^/]+/)*(?:(?P<display_id>.+)?-)?(?P<id>[0-9]+)(?:-[a-z]+)?(?:\.html)?'
     _TESTS = [
         {
             'url': 'http://screen.yahoo.com/julian-smith-travis-legg-watch-214727115.html',
@@ -47,6 +52,7 @@ class YahooIE(InfoExtractor):
                 'description': 'md5:66b627ab0a282b26352136ca96ce73c1',
                 'duration': 151,
             },
+            'skip': 'HTTP Error 404',
         },
         {
             'url': 'https://screen.yahoo.com/community/community-sizzle-reel-203225340.html?format=embed',
@@ -139,7 +145,7 @@ class YahooIE(InfoExtractor):
             'skip': 'Domain name in.lifestyle.yahoo.com gone',
         }, {
             'url': 'https://www.yahoo.com/movies/v/true-story-trailer-173000497.html',
-            'md5': '2a9752f74cb898af5d1083ea9f661b58',
+            'md5': '989396ae73d20c6f057746fb226aa215',
             'info_dict': {
                 'id': '071c4013-ce30-3a93-a5b2-e0413cd4a9d1',
                 'ext': 'mp4',
@@ -198,13 +204,59 @@ class YahooIE(InfoExtractor):
             },
             'skip': 'redirect to https://www.yahoo.com/music',
         },
+        {
+            # yahoo://article/
+            'url': 'https://www.yahoo.com/movies/video/true-story-trailer-173000497.html',
+            'info_dict': {
+                'id': '071c4013-ce30-3a93-a5b2-e0413cd4a9d1',
+                'ext': 'mp4',
+                'title': "'True Story' Trailer",
+                'description': 'True Story',
+            },
+            'params': {
+                'skip_download': True,
+            },
+        },
+        {
+            # ytwnews://cavideo/
+            'url': 'https://tw.video.yahoo.com/movie-tw/單車天使-中文版預-092316541.html',
+            'info_dict': {
+                'id': 'ba133ff2-0793-3510-b636-59dfe9ff6cff',
+                'ext': 'mp4',
+                'title': '單車天使 - 中文版預',
+                'description': '中文版預',
+            },
+            'params': {
+                'skip_download': True,
+            },
+        },
+        {
+            # custom brightcove
+            'url': 'https://au.tv.yahoo.com/plus7/sunrise/-/watch/37083565/clown-entertainers-say-it-is-hurting-their-business/',
+            'info_dict': {
+                'id': '5575377707001',
+                'ext': 'mp4',
+                'title': "Clown entertainers say 'It' is hurting their business",
+                'description': 'Stephen King s horror film has much to answer for. Jelby and Mr Loopy the Clowns join us.',
+                'timestamp': 1505341164,
+                'upload_date': '20170913',
+                'uploader_id': '2376984109001',
+            },
+            'params': {
+                'skip_download': True,
+            },
+        },
+        {
+            # custom brightcove, geo-restricted to Australia, bypassable
+            'url': 'https://au.tv.yahoo.com/plus7/sunrise/-/watch/37263964/sunrise-episode-wed-27-sep/',
+            'only_matching': True,
+        }
     ]
 
     def _real_extract(self, url):
         mobj = re.match(self._VALID_URL, url)
-        display_id = mobj.group('display_id') or self._match_id(url)
         page_id = mobj.group('id')
-        url = mobj.group('url')
+        display_id = mobj.group('display_id') or page_id
         host = mobj.group('host')
         webpage, urlh = self._download_webpage_handle(url, display_id)
         if 'err=404' in urlh.geturl():
@@ -223,10 +275,36 @@ class YahooIE(InfoExtractor):
         if nbc_sports_url:
             return self.url_result(nbc_sports_url, NBCSportsVPlayerIE.ie_key())
 
-        # Look for Brightcove New Studio embeds
-        bc_url = BrightcoveNewIE._extract_url(webpage)
+        # Look for Brightcove Legacy Studio embeds
+        bc_url = BrightcoveLegacyIE._extract_brightcove_url(webpage)
         if bc_url:
-            return self.url_result(bc_url, BrightcoveNewIE.ie_key())
+            return self.url_result(bc_url, BrightcoveLegacyIE.ie_key())
+
+        def brightcove_url_result(bc_url):
+            return self.url_result(
+                smuggle_url(bc_url, {'geo_countries': [mobj.group('country')]}),
+                BrightcoveNewIE.ie_key())
+
+        # Look for Brightcove New Studio embeds
+        bc_url = BrightcoveNewIE._extract_url(self, webpage)
+        if bc_url:
+            return brightcove_url_result(bc_url)
+
+        brightcove_iframe = self._search_regex(
+            r'(<iframe[^>]+data-video-id=["\']\d+[^>]+>)', webpage,
+            'brightcove iframe', default=None)
+        if brightcove_iframe:
+            attr = extract_attributes(brightcove_iframe)
+            src = attr.get('src')
+            if src:
+                parsed_src = compat_urlparse.urlparse(src)
+                qs = compat_urlparse.parse_qs(parsed_src.query)
+                account_id = qs.get('accountId', ['2376984109001'])[0]
+                brightcove_id = attr.get('data-video-id') or qs.get('videoId', [None])[0]
+                if account_id and brightcove_id:
+                    return brightcove_url_result(
+                        'http://players.brightcove.net/%s/default_default/index.html?videoId=%s'
+                        % (account_id, brightcove_id))
 
         # Query result is often embedded in webpage as JSON. Sometimes explicit requests
         # to video API results in a failure with geo restriction reason therefore using
@@ -261,7 +339,8 @@ class YahooIE(InfoExtractor):
                     r'"first_videoid"\s*:\s*"([^"]+)"',
                     r'%s[^}]*"ccm_id"\s*:\s*"([^"]+)"' % re.escape(page_id),
                     r'<article[^>]data-uuid=["\']([^"\']+)',
-                    r'yahoo://article/view\?.*\buuid=([^&"\']+)',
+                    r'<meta[^<>]+yahoo://article/view\?.*\buuid=([^&"\']+)',
+                    r'<meta[^<>]+["\']ytwnews://cavideo/(?:[^/]+/)+([\da-fA-F-]+)[&"\']',
                 ]
                 video_id = self._search_regex(
                     CONTENT_ID_REGEXES, webpage, 'content ID')
@@ -398,3 +477,82 @@ class YahooSearchIE(SearchInfoExtractor):
             'id': query,
             'entries': entries,
         }
+
+
+class YahooGyaOPlayerIE(InfoExtractor):
+    IE_NAME = 'yahoo:gyao:player'
+    _VALID_URL = r'https?://(?:gyao\.yahoo\.co\.jp/(?:player|episode/[^/]+)|streaming\.yahoo\.co\.jp/c/y)/(?P<id>\d+/v\d+/v\d+|[\da-f]{8}-[\da-f]{4}-[\da-f]{4}-[\da-f]{4}-[\da-f]{12})'
+    _TESTS = [{
+        'url': 'https://gyao.yahoo.co.jp/player/00998/v00818/v0000000000000008564/',
+        'info_dict': {
+            'id': '5993125228001',
+            'ext': 'mp4',
+            'title': 'フューリー　【字幕版】',
+            'description': 'md5:21e691c798a15330eda4db17a8fe45a5',
+            'uploader_id': '4235717419001',
+            'upload_date': '20190124',
+            'timestamp': 1548294365,
+        },
+        'params': {
+            # m3u8 download
+            'skip_download': True,
+        },
+    }, {
+        'url': 'https://streaming.yahoo.co.jp/c/y/01034/v00133/v0000000000000000706/',
+        'only_matching': True,
+    }, {
+        'url': 'https://gyao.yahoo.co.jp/episode/%E3%81%8D%E3%81%AE%E3%81%86%E4%BD%95%E9%A3%9F%E3%81%B9%E3%81%9F%EF%BC%9F%20%E7%AC%AC2%E8%A9%B1%202019%2F4%2F12%E6%94%BE%E9%80%81%E5%88%86/5cb02352-b725-409e-9f8d-88f947a9f682',
+        'only_matching': True,
+    }]
+
+    def _real_extract(self, url):
+        video_id = self._match_id(url).replace('/', ':')
+        video = self._download_json(
+            'https://gyao.yahoo.co.jp/dam/v1/videos/' + video_id,
+            video_id, query={
+                'fields': 'longDescription,title,videoId',
+            }, headers={
+                'X-User-Agent': 'Unknown Pc GYAO!/2.0.0 Web',
+            })
+        return {
+            '_type': 'url_transparent',
+            'id': video_id,
+            'title': video['title'],
+            'url': smuggle_url(
+                'http://players.brightcove.net/4235717419001/default_default/index.html?videoId=' + video['videoId'],
+                {'geo_countries': ['JP']}),
+            'description': video.get('longDescription'),
+            'ie_key': BrightcoveNewIE.ie_key(),
+        }
+
+
+class YahooGyaOIE(InfoExtractor):
+    IE_NAME = 'yahoo:gyao'
+    _VALID_URL = r'https?://(?:gyao\.yahoo\.co\.jp/(?:p|title/[^/]+)|streaming\.yahoo\.co\.jp/p/y)/(?P<id>\d+/v\d+|[\da-f]{8}-[\da-f]{4}-[\da-f]{4}-[\da-f]{4}-[\da-f]{12})'
+    _TESTS = [{
+        'url': 'https://gyao.yahoo.co.jp/p/00449/v03102/',
+        'info_dict': {
+            'id': '00449:v03102',
+        },
+        'playlist_count': 2,
+    }, {
+        'url': 'https://streaming.yahoo.co.jp/p/y/01034/v00133/',
+        'only_matching': True,
+    }, {
+        'url': 'https://gyao.yahoo.co.jp/title/%E3%81%97%E3%82%83%E3%81%B9%E3%81%8F%E3%82%8A007/5b025a49-b2e5-4dc7-945c-09c6634afacf',
+        'only_matching': True,
+    }]
+
+    def _real_extract(self, url):
+        program_id = self._match_id(url).replace('/', ':')
+        videos = self._download_json(
+            'https://gyao.yahoo.co.jp/api/programs/%s/videos' % program_id, program_id)['videos']
+        entries = []
+        for video in videos:
+            video_id = video.get('id')
+            if not video_id:
+                continue
+            entries.append(self.url_result(
+                'https://gyao.yahoo.co.jp/player/%s/' % video_id.replace(':', '/'),
+                YahooGyaOPlayerIE.ie_key(), video_id))
+        return self.playlist_result(entries, program_id)

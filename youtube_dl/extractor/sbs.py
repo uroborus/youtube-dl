@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+# coding: utf-8
 from __future__ import unicode_literals
 
 from .common import InfoExtractor
@@ -22,7 +22,7 @@ class SBSIE(InfoExtractor):
             'ext': 'mp4',
             'title': 'Dingo Conservation (The Feed)',
             'description': 'md5:f250a9856fca50d22dec0b5b8015f8a5',
-            'thumbnail': 're:http://.*\.jpg',
+            'thumbnail': r're:http://.*\.jpg',
             'duration': 308,
             'timestamp': 1408613220,
             'upload_date': '20140821',
@@ -55,8 +55,8 @@ class SBSIE(InfoExtractor):
             raise ExtractorError('%s said: %s' % (self.IE_NAME, error_message), expected=True)
 
         urls = player_params['releaseUrls']
-        theplatform_url = (urls.get('progressive') or urls.get('html') or
-                           urls.get('standard') or player_params['relatedItemsURL'])
+        theplatform_url = (urls.get('progressive') or urls.get('html')
+                           or urls.get('standard') or player_params['relatedItemsURL'])
 
         return {
             '_type': 'url_transparent',

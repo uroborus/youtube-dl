@@ -1,22 +1,28 @@
 # coding: utf-8
 from __future__ import unicode_literals
 
-import re
 import itertools
+import re
 
 from .common import InfoExtractor
 from ..utils import (
+    clean_html,
     dict_get,
     ExtractorError,
     float_or_none,
+    get_element_by_class,
     int_or_none,
+    js_to_json,
     parse_duration,
     parse_iso8601,
     try_get,
     unescapeHTML,
+    url_or_none,
+    urlencode_postdata,
+    urljoin,
 )
 from ..compat import (
-    compat_etree_fromstring,
+    compat_etree_Element,
     compat_HTTPError,
     compat_urlparse,
 )
@@ -25,18 +31,22 @@ from ..compat import (
 class BBCCoUkIE(InfoExtractor):
     IE_NAME = 'bbc.co.uk'
     IE_DESC = 'BBC iPlayer'
-    _ID_REGEX = r'[pb][\da-z]{7}'
+    _ID_REGEX = r'(?:[pbm][\da-z]{7}|w[\da-z]{7,14})'
     _VALID_URL = r'''(?x)
                     https?://
                         (?:www\.)?bbc\.co\.uk/
                         (?:
                             programmes/(?!articles/)|
                             iplayer(?:/[^/]+)?/(?:episode/|playlist/)|
-                            music/clips[/#]|
-                            radio/player/
+                            music/(?:clips|audiovideo/popular)[/#]|
+                            radio/player/|
+                            events/[^/]+/play/[^/]+/
                         )
                         (?P<id>%s)(?!/(?:episodes|broadcasts|clips))
                     ''' % _ID_REGEX
+
+    _LOGIN_URL = 'https://account.bbc.com/signin'
+    _NETRC_MACHINE = 'bbc'
 
     _MEDIASELECTOR_URLS = [
         # Provides HQ HLS streams with even better quality that pc mediaset but fails
@@ -198,7 +208,7 @@ class BBCCoUkIE(InfoExtractor):
             },
             'skip': 'Now it\'s really geo-restricted',
         }, {
-            # compact player (https://github.com/rg3/youtube-dl/issues/8147)
+            # compact player (https://github.com/ytdl-org/youtube-dl/issues/8147)
             'url': 'http://www.bbc.co.uk/programmes/p028bfkf/player',
             'info_dict': {
                 'id': 'p028bfkj',
@@ -222,8 +232,54 @@ class BBCCoUkIE(InfoExtractor):
         }, {
             'url': 'http://www.bbc.co.uk/radio/player/p03cchwf',
             'only_matching': True,
-        }
-    ]
+        }, {
+            'url': 'https://www.bbc.co.uk/music/audiovideo/popular#p055bc55',
+            'only_matching': True,
+        }, {
+            'url': 'http://www.bbc.co.uk/programmes/w3csv1y9',
+            'only_matching': True,
+        }, {
+            'url': 'https://www.bbc.co.uk/programmes/m00005xn',
+            'only_matching': True,
+        }, {
+            'url': 'https://www.bbc.co.uk/programmes/w172w4dww1jqt5s',
+            'only_matching': True,
+        }]
+
+    _USP_RE = r'/([^/]+?)\.ism(?:\.hlsv2\.ism)?/[^/]+\.m3u8'
+
+    def _login(self):
+        username, password = self._get_login_info()
+        if username is None:
+            return
+
+        login_page = self._download_webpage(
+            self._LOGIN_URL, None, 'Downloading signin page')
+
+        login_form = self._hidden_inputs(login_page)
+
+        login_form.update({
+            'username': username,
+            'password': password,
+        })
+
+        post_url = urljoin(self._LOGIN_URL, self._search_regex(
+            r'<form[^>]+action=(["\'])(?P<url>.+?)\1', login_page,
+            'post url', default=self._LOGIN_URL, group='url'))
+
+        response, urlh = self._download_webpage_handle(
+            post_url, None, 'Logging in', data=urlencode_postdata(login_form),
+            headers={'Referer': self._LOGIN_URL})
+
+        if self._LOGIN_URL in urlh.geturl():
+            error = clean_html(get_element_by_class('form-message', response))
+            if error:
+                raise ExtractorError(
+                    'Unable to login: %s' % error, expected=True)
+            raise ExtractorError('Unable to log in')
+
+    def _real_initialize(self):
+        self._login()
 
     class MediaSelectionError(Exception):
         def __init__(self, id):
@@ -256,7 +312,13 @@ class BBCCoUkIE(InfoExtractor):
     def _get_subtitles(self, media, programme_id):
         subtitles = {}
         for connection in self._extract_connections(media):
-            captions = self._download_xml(connection.get('href'), programme_id, 'Downloading captions')
+            cc_url = url_or_none(connection.get('href'))
+            if not cc_url:
+                continue
+            captions = self._download_xml(
+                cc_url, programme_id, 'Downloading captions', fatal=False)
+            if not isinstance(captions, compat_etree_Element):
+                continue
             lang = captions.get('{http://www.w3.org/XML/1998/namespace}lang', 'en')
             subtitles[lang] = [
                 {
@@ -285,14 +347,9 @@ class BBCCoUkIE(InfoExtractor):
         self._raise_extractor_error(last_exception)
 
     def _download_media_selector_url(self, url, programme_id=None):
-        try:
-            media_selection = self._download_xml(
-                url, programme_id, 'Downloading media selection XML')
-        except ExtractorError as ee:
-            if isinstance(ee.cause, compat_HTTPError) and ee.cause.code in (403, 404):
-                media_selection = compat_etree_fromstring(ee.cause.read().decode('utf-8'))
-            else:
-                raise
+        media_selection = self._download_xml(
+            url, programme_id, 'Downloading media selection XML',
+            expected_status=(403, 404))
         return self._process_media_selector(media_selection, programme_id)
 
     def _process_media_selector(self, media_selection, programme_id):
@@ -336,6 +393,15 @@ class BBCCoUkIE(InfoExtractor):
                         formats.extend(self._extract_m3u8_formats(
                             href, programme_id, ext='mp4', entry_protocol='m3u8_native',
                             m3u8_id=format_id, fatal=False))
+                        if re.search(self._USP_RE, href):
+                            usp_formats = self._extract_m3u8_formats(
+                                re.sub(self._USP_RE, r'/\1.ism/\1.m3u8', href),
+                                programme_id, ext='mp4', entry_protocol='m3u8_native',
+                                m3u8_id=format_id, fatal=False)
+                            for f in usp_formats:
+                                if f.get('height') and f['height'] > 720:
+                                    continue
+                                formats.append(f)
                     elif transfer_format == 'hds':
                         formats.extend(self._extract_f4m_formats(
                             href, programme_id, f4m_id=format_id, fatal=False))
@@ -350,7 +416,7 @@ class BBCCoUkIE(InfoExtractor):
                             fmt.update({
                                 'width': width,
                                 'height': height,
-                                'vbr': bitrate,
+                                'tbr': bitrate,
                                 'vcodec': encoding,
                             })
                         else:
@@ -359,7 +425,7 @@ class BBCCoUkIE(InfoExtractor):
                                 'acodec': encoding,
                                 'vcodec': 'none',
                             })
-                        if protocol == 'http':
+                        if protocol in ('http', 'https'):
                             # Direct link
                             fmt.update({
                                 'url': href,
@@ -378,6 +444,8 @@ class BBCCoUkIE(InfoExtractor):
                                 'rtmp_live': False,
                                 'ext': 'flv',
                             })
+                        else:
+                            continue
                         formats.append(fmt)
             elif kind == 'captions':
                 subtitles = self.extract_subtitles(media, programme_id)
@@ -396,7 +464,7 @@ class BBCCoUkIE(InfoExtractor):
                 description = smp_config['summary']
                 for item in smp_config['items']:
                     kind = item['kind']
-                    if kind != 'programme' and kind != 'radioProgramme':
+                    if kind not in ('programme', 'radioProgramme'):
                         continue
                     programme_id = item.get('vpid')
                     duration = int_or_none(item.get('duration'))
@@ -437,7 +505,7 @@ class BBCCoUkIE(InfoExtractor):
 
         for item in self._extract_items(playlist):
             kind = item.get('kind')
-            if kind != 'programme' and kind != 'radioProgramme':
+            if kind not in ('programme', 'radioProgramme'):
                 continue
             title = playlist.find('./{%s}title' % self._EMP_PLAYLIST_NS).text
             description_el = playlist.find('./{%s}summary' % self._EMP_PLAYLIST_NS)
@@ -469,6 +537,12 @@ class BBCCoUkIE(InfoExtractor):
         group_id = self._match_id(url)
 
         webpage = self._download_webpage(url, group_id, 'Downloading video page')
+
+        error = self._search_regex(
+            r'<div\b[^>]+\bclass=["\']smp__message delta["\'][^>]*>([^<]+)<',
+            webpage, 'error', default=None)
+        if error:
+            raise ExtractorError(error, expected=True)
 
         programme_id = None
         duration = None
@@ -707,6 +781,37 @@ class BBCIE(BBCCoUkIE):
         # single video article embedded with data-media-vpid
         'url': 'http://www.bbc.co.uk/sport/rowing/35908187',
         'only_matching': True,
+    }, {
+        'url': 'https://www.bbc.co.uk/bbcthree/clip/73d0bbd0-abc3-4cea-b3c0-cdae21905eb1',
+        'info_dict': {
+            'id': 'p06556y7',
+            'ext': 'mp4',
+            'title': 'Transfers: Cristiano Ronaldo to Man Utd, Arsenal to spend?',
+            'description': 'md5:4b7dfd063d5a789a1512e99662be3ddd',
+        },
+        'params': {
+            'skip_download': True,
+        }
+    }, {
+        # window.__PRELOADED_STATE__
+        'url': 'https://www.bbc.co.uk/radio/play/b0b9z4yl',
+        'info_dict': {
+            'id': 'b0b9z4vz',
+            'ext': 'mp4',
+            'title': 'Prom 6: An American in Paris and Turangalila',
+            'description': 'md5:51cf7d6f5c8553f197e58203bc78dff8',
+            'uploader': 'Radio 3',
+            'uploader_id': 'bbc_radio_three',
+        },
+    }, {
+        'url': 'http://www.bbc.co.uk/learningenglish/chinese/features/lingohack/ep-181227',
+        'info_dict': {
+            'id': 'p06w9tws',
+            'ext': 'mp4',
+            'title': 'md5:2fabf12a726603193a2879a055f72514',
+            'description': 'Learn English words and phrases from this story',
+        },
+        'add_ie': [BBCCoUkIE.ie_key()],
     }]
 
     @classmethod
@@ -857,6 +962,15 @@ class BBCIE(BBCCoUkIE):
         if entries:
             return self.playlist_result(entries, playlist_id, playlist_title, playlist_description)
 
+        # http://www.bbc.co.uk/learningenglish/chinese/features/lingohack/ep-181227
+        group_id = self._search_regex(
+            r'<div[^>]+\bclass=["\']video["\'][^>]+\bdata-pid=["\'](%s)' % self._ID_REGEX,
+            webpage, 'group id', default=None)
+        if playlist_id:
+            return self.url_result(
+                'https://www.bbc.co.uk/programmes/%s' % group_id,
+                ie=BBCCoUkIE.ie_key())
+
         # single video story (e.g. http://www.bbc.com/travel/story/20150625-sri-lankas-spicy-secret)
         programme_id = self._search_regex(
             [r'data-(?:video-player|media)-vpid="(%s)"' % self._ID_REGEX,
@@ -928,6 +1042,66 @@ class BBCIE(BBCCoUkIE):
                     'formats': formats,
                     'subtitles': subtitles,
                 }
+
+        preload_state = self._parse_json(self._search_regex(
+            r'window\.__PRELOADED_STATE__\s*=\s*({.+?});', webpage,
+            'preload state', default='{}'), playlist_id, fatal=False)
+        if preload_state:
+            current_programme = preload_state.get('programmes', {}).get('current') or {}
+            programme_id = current_programme.get('id')
+            if current_programme and programme_id and current_programme.get('type') == 'playable_item':
+                title = current_programme.get('titles', {}).get('tertiary') or playlist_title
+                formats, subtitles = self._download_media_selector(programme_id)
+                self._sort_formats(formats)
+                synopses = current_programme.get('synopses') or {}
+                network = current_programme.get('network') or {}
+                duration = int_or_none(
+                    current_programme.get('duration', {}).get('value'))
+                thumbnail = None
+                image_url = current_programme.get('image_url')
+                if image_url:
+                    thumbnail = image_url.replace('{recipe}', '1920x1920')
+                return {
+                    'id': programme_id,
+                    'title': title,
+                    'description': dict_get(synopses, ('long', 'medium', 'short')),
+                    'thumbnail': thumbnail,
+                    'duration': duration,
+                    'uploader': network.get('short_title'),
+                    'uploader_id': network.get('id'),
+                    'formats': formats,
+                    'subtitles': subtitles,
+                }
+
+        bbc3_config = self._parse_json(
+            self._search_regex(
+                r'(?s)bbcthreeConfig\s*=\s*({.+?})\s*;\s*<', webpage,
+                'bbcthree config', default='{}'),
+            playlist_id, transform_source=js_to_json, fatal=False)
+        if bbc3_config:
+            bbc3_playlist = try_get(
+                bbc3_config, lambda x: x['payload']['content']['bbcMedia']['playlist'],
+                dict)
+            if bbc3_playlist:
+                playlist_title = bbc3_playlist.get('title') or playlist_title
+                thumbnail = bbc3_playlist.get('holdingImageURL')
+                entries = []
+                for bbc3_item in bbc3_playlist['items']:
+                    programme_id = bbc3_item.get('versionID')
+                    if not programme_id:
+                        continue
+                    formats, subtitles = self._download_media_selector(programme_id)
+                    self._sort_formats(formats)
+                    entries.append({
+                        'id': programme_id,
+                        'title': playlist_title,
+                        'thumbnail': thumbnail,
+                        'timestamp': timestamp,
+                        'formats': formats,
+                        'subtitles': subtitles,
+                    })
+                return self.playlist_result(
+                    entries, playlist_id, playlist_title, playlist_description)
 
         def extract_all(pattern):
             return list(filter(None, map(
@@ -1028,7 +1202,7 @@ class BBCIE(BBCCoUkIE):
 
 
 class BBCCoUkArticleIE(InfoExtractor):
-    _VALID_URL = r'https?://www.bbc.co.uk/programmes/articles/(?P<id>[a-zA-Z0-9]+)'
+    _VALID_URL = r'https?://(?:www\.)?bbc\.co\.uk/programmes/articles/(?P<id>[a-zA-Z0-9]+)'
     IE_NAME = 'bbc.co.uk:article'
     IE_DESC = 'BBC articles'
 

@@ -20,7 +20,7 @@ class SaveFromIE(InfoExtractor):
             'upload_date': '20120816',
             'uploader': 'Howcast',
             'uploader_id': 'Howcast',
-            'description': 're:(?s).* Hi, my name is Rene Dreifuss\. And I\'m here to show you some MMA.*',
+            'description': r're:(?s).* Hi, my name is Rene Dreifuss\. And I\'m here to show you some MMA.*',
         },
         'params': {
             'skip_download': True
@@ -30,8 +30,5 @@ class SaveFromIE(InfoExtractor):
     def _real_extract(self, url):
         mobj = re.match(self._VALID_URL, url)
         video_id = os.path.splitext(url.split('/')[-1])[0]
-        return {
-            '_type': 'url',
-            'id': video_id,
-            'url': mobj.group('url'),
-        }
+
+        return self.url_result(mobj.group('url'), video_id=video_id)

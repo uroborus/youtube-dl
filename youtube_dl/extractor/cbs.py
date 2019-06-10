@@ -2,21 +2,28 @@ from __future__ import unicode_literals
 
 from .theplatform import ThePlatformFeedIE
 from ..utils import (
+    ExtractorError,
     int_or_none,
     find_xpath_attr,
-    ExtractorError,
+    xpath_element,
+    xpath_text,
+    update_url_query,
 )
 
 
 class CBSBaseIE(ThePlatformFeedIE):
     def _parse_smil_subtitles(self, smil, namespace=None, subtitles_lang='en'):
-        closed_caption_e = find_xpath_attr(smil, self._xpath_ns('.//param', namespace), 'name', 'ClosedCaptionURL')
-        return {
-            'en': [{
-                'ext': 'ttml',
-                'url': closed_caption_e.attrib['value'],
-            }]
-        } if closed_caption_e is not None and closed_caption_e.attrib.get('value') else []
+        subtitles = {}
+        for k, ext in [('sMPTE-TTCCURL', 'tt'), ('ClosedCaptionURL', 'ttml'), ('webVTTCaptionURL', 'vtt')]:
+            cc_e = find_xpath_attr(smil, self._xpath_ns('.//param', namespace), 'name', k)
+            if cc_e is not None:
+                cc_url = cc_e.get('value')
+                if cc_url:
+                    subtitles.setdefault(subtitles_lang, []).append({
+                        'ext': ext,
+                        'url': cc_url,
+                    })
+        return subtitles
 
 
 class CBSIE(CBSBaseIE):
@@ -47,27 +54,56 @@ class CBSIE(CBSBaseIE):
         'only_matching': True,
     }]
 
-    def _extract_video_info(self, guid):
-        path = 'dJ5BDC/media/guid/2198311517/' + guid
-        smil_url = 'http://link.theplatform.com/s/%s?mbr=true' % path
-        formats, subtitles = self._extract_theplatform_smil(smil_url + '&manifest=m3u', guid)
-        for r in ('OnceURL&formats=M3U', 'HLS&formats=M3U', 'RTMP', 'WIFI', '3G'):
-            try:
-                tp_formats, _ = self._extract_theplatform_smil(smil_url + '&assetTypes=' + r, guid, 'Downloading %s SMIL data' % r.split('&')[0])
-                formats.extend(tp_formats)
-            except ExtractorError:
+    def _extract_video_info(self, content_id, site='cbs', mpx_acc=2198311517):
+        items_data = self._download_xml(
+            'http://can.cbs.com/thunder/player/videoPlayerService.php',
+            content_id, query={'partner': site, 'contentId': content_id})
+        video_data = xpath_element(items_data, './/item')
+        title = xpath_text(video_data, 'videoTitle', 'title', True)
+        tp_path = 'dJ5BDC/media/guid/%d/%s' % (mpx_acc, content_id)
+        tp_release_url = 'http://link.theplatform.com/s/' + tp_path
+
+        asset_types = []
+        subtitles = {}
+        formats = []
+        last_e = None
+        for item in items_data.findall('.//item'):
+            asset_type = xpath_text(item, 'assetType')
+            if not asset_type or asset_type in asset_types or 'HLS_FPS' in asset_type or 'DASH_CENC' in asset_type:
                 continue
+            asset_types.append(asset_type)
+            query = {
+                'mbr': 'true',
+                'assetTypes': asset_type,
+            }
+            if asset_type.startswith('HLS') or asset_type in ('OnceURL', 'StreamPack'):
+                query['formats'] = 'MPEG4,M3U'
+            elif asset_type in ('RTMP', 'WIFI', '3G'):
+                query['formats'] = 'MPEG4,FLV'
+            try:
+                tp_formats, tp_subtitles = self._extract_theplatform_smil(
+                    update_url_query(tp_release_url, query), content_id,
+                    'Downloading %s SMIL data' % asset_type)
+            except ExtractorError as e:
+                last_e = e
+                continue
+            formats.extend(tp_formats)
+            subtitles = self._merge_subtitles(subtitles, tp_subtitles)
+        if last_e and not formats:
+            raise last_e
         self._sort_formats(formats)
-        metadata = self._download_theplatform_metadata(path, guid)
-        info = self._parse_theplatform_metadata(metadata)
+
+        info = self._extract_theplatform_metadata(tp_path, content_id)
         info.update({
-            'id': guid,
+            'id': content_id,
+            'title': title,
+            'series': xpath_text(video_data, 'seriesTitle'),
+            'season_number': int_or_none(xpath_text(video_data, 'seasonNumber')),
+            'episode_number': int_or_none(xpath_text(video_data, 'episodeNumber')),
+            'duration': int_or_none(xpath_text(video_data, 'videoLength'), 1000),
+            'thumbnail': xpath_text(video_data, 'previewImageURL'),
             'formats': formats,
             'subtitles': subtitles,
-            'series': metadata.get('cbs$SeriesTitle'),
-            'season_number': int_or_none(metadata.get('cbs$SeasonNumber')),
-            'episode': metadata.get('cbs$EpisodeTitle'),
-            'episode_number': int_or_none(metadata.get('cbs$EpisodeNumber')),
         })
         return info
 

@@ -1,8 +1,11 @@
 # coding: utf-8
 from __future__ import unicode_literals
 
+import re
+
 from .common import InfoExtractor
 from ..utils import (
+    int_or_none,
     parse_iso8601,
     unescapeHTML,
 )
@@ -18,7 +21,7 @@ class PeriscopeBaseIE(InfoExtractor):
 class PeriscopeIE(PeriscopeBaseIE):
     IE_DESC = 'Periscope'
     IE_NAME = 'periscope'
-    _VALID_URL = r'https?://(?:www\.)?periscope\.tv/[^/]+/(?P<id>[^/?#]+)'
+    _VALID_URL = r'https?://(?:www\.)?(?:periscope|pscp)\.tv/[^/]+/(?P<id>[^/?#]+)'
     # Alive example URLs can be found here http://onperiscope.com/
     _TESTS = [{
         'url': 'https://www.periscope.tv/w/aJUQnjY3MjA3ODF8NTYxMDIyMDl2zCg2pECBgwTqRpQuQD352EMPTKQjT4uqlM3cgWFA-g==',
@@ -39,23 +42,31 @@ class PeriscopeIE(PeriscopeBaseIE):
     }, {
         'url': 'https://www.periscope.tv/bastaakanoggano/1OdKrlkZZjOJX',
         'only_matching': True,
+    }, {
+        'url': 'https://www.periscope.tv/w/1ZkKzPbMVggJv',
+        'only_matching': True,
     }]
+
+    @staticmethod
+    def _extract_url(webpage):
+        mobj = re.search(
+            r'<iframe[^>]+src=([\'"])(?P<url>(?:https?:)?//(?:www\.)?(?:periscope|pscp)\.tv/(?:(?!\1).)+)\1', webpage)
+        if mobj:
+            return mobj.group('url')
 
     def _real_extract(self, url):
         token = self._match_id(url)
 
-        broadcast_data = self._call_api(
-            'getBroadcastPublic', {'broadcast_id': token}, token)
-        broadcast = broadcast_data['broadcast']
-        status = broadcast['status']
+        stream = self._call_api(
+            'accessVideoPublic', {'broadcast_id': token}, token)
 
-        user = broadcast_data.get('user', {})
+        broadcast = stream['broadcast']
+        title = broadcast['status']
 
-        uploader = broadcast.get('user_display_name') or user.get('display_name')
-        uploader_id = (broadcast.get('username') or user.get('username') or
-                       broadcast.get('user_id') or user.get('id'))
+        uploader = broadcast.get('user_display_name') or broadcast.get('username')
+        uploader_id = (broadcast.get('user_id') or broadcast.get('username'))
 
-        title = '%s - %s' % (uploader, status) if uploader else status
+        title = '%s - %s' % (uploader, title) if uploader else title
         state = broadcast.get('state').lower()
         if state == 'running':
             title = self._live_title(title)
@@ -65,21 +76,37 @@ class PeriscopeIE(PeriscopeBaseIE):
             'url': broadcast[image],
         } for image in ('image_url', 'image_url_small') if broadcast.get(image)]
 
-        stream = self._call_api(
-            'getAccessPublic', {'broadcast_id': token}, token)
+        width = int_or_none(broadcast.get('width'))
+        height = int_or_none(broadcast.get('height'))
 
+        def add_width_and_height(f):
+            for key, val in (('width', width), ('height', height)):
+                if not f.get(key):
+                    f[key] = val
+
+        video_urls = set()
         formats = []
-        for format_id in ('replay', 'rtmp', 'hls', 'https_hls'):
+        for format_id in ('replay', 'rtmp', 'hls', 'https_hls', 'lhls', 'lhlsweb'):
             video_url = stream.get(format_id + '_url')
-            if not video_url:
+            if not video_url or video_url in video_urls:
                 continue
-            f = {
+            video_urls.add(video_url)
+            if format_id != 'rtmp':
+                m3u8_formats = self._extract_m3u8_formats(
+                    video_url, token, 'mp4',
+                    entry_protocol='m3u8_native'
+                    if state in ('ended', 'timed_out') else 'm3u8',
+                    m3u8_id=format_id, fatal=False)
+                if len(m3u8_formats) == 1:
+                    add_width_and_height(m3u8_formats[0])
+                formats.extend(m3u8_formats)
+                continue
+            rtmp_format = {
                 'url': video_url,
                 'ext': 'flv' if format_id == 'rtmp' else 'mp4',
             }
-            if format_id != 'rtmp':
-                f['protocol'] = 'm3u8_native' if state == 'ended' else 'm3u8'
-            formats.append(f)
+            add_width_and_height(rtmp_format)
+            formats.append(rtmp_format)
         self._sort_formats(formats)
 
         return {
@@ -94,7 +121,7 @@ class PeriscopeIE(PeriscopeBaseIE):
 
 
 class PeriscopeUserIE(PeriscopeBaseIE):
-    _VALID_URL = r'https?://www\.periscope\.tv/(?P<id>[^/]+)/?$'
+    _VALID_URL = r'https?://(?:www\.)?(?:periscope|pscp)\.tv/(?P<id>[^/]+)/?$'
     IE_DESC = 'Periscope user videos'
     IE_NAME = 'periscope:user'
 
@@ -123,7 +150,7 @@ class PeriscopeUserIE(PeriscopeBaseIE):
 
         user = list(data_store['UserCache']['users'].values())[0]['user']
         user_id = user['id']
-        session_id = data_store['SessionToken']['broadcastHistory']['token']['session_id']
+        session_id = data_store['SessionToken']['public']['broadcastHistory']['token']['session_id']
 
         broadcasts = self._call_api(
             'getUserBroadcastsPublic',

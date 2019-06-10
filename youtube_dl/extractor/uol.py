@@ -61,7 +61,7 @@ class UOLIE(InfoExtractor):
             'height': 360,
         },
         '5': {
-            'width': 1080,
+            'width': 1280,
             'height': 720,
         },
         '6': {
@@ -80,35 +80,66 @@ class UOLIE(InfoExtractor):
             'width': 568,
             'height': 320,
         },
+        '11': {
+            'width': 640,
+            'height': 360,
+        }
     }
 
     def _real_extract(self, url):
         video_id = self._match_id(url)
-        if not video_id.isdigit():
-            embed_page = self._download_webpage('https://jsuol.com.br/c/tv/uol/embed/?params=[embed,%s]' % video_id, video_id)
-            video_id = self._search_regex(r'mediaId=(\d+)', embed_page, 'media id')
+        media_id = None
+
+        if video_id.isdigit():
+            media_id = video_id
+
+        if not media_id:
+            embed_page = self._download_webpage(
+                'https://jsuol.com.br/c/tv/uol/embed/?params=[embed,%s]' % video_id,
+                video_id, 'Downloading embed page', fatal=False)
+            if embed_page:
+                media_id = self._search_regex(
+                    (r'uol\.com\.br/(\d+)', r'mediaId=(\d+)'),
+                    embed_page, 'media id', default=None)
+
+        if not media_id:
+            webpage = self._download_webpage(url, video_id)
+            media_id = self._search_regex(r'mediaId=(\d+)', webpage, 'media id')
+
         video_data = self._download_json(
-            'http://mais.uol.com.br/apiuol/v3/player/getMedia/%s.json' % video_id,
-            video_id)['item']
+            'http://mais.uol.com.br/apiuol/v3/player/getMedia/%s.json' % media_id,
+            media_id)['item']
         title = video_data['title']
 
         query = {
             'ver': video_data.get('numRevision', 2),
             'r': 'http://mais.uol.com.br',
         }
+        for k in ('token', 'sign'):
+            v = video_data.get(k)
+            if v:
+                query[k] = v
+
         formats = []
         for f in video_data.get('formats', []):
             f_url = f.get('url') or f.get('secureUrl')
             if not f_url:
                 continue
+            f_url = update_url_query(f_url, query)
             format_id = str_or_none(f.get('id'))
+            if format_id == '10':
+                formats.extend(self._extract_m3u8_formats(
+                    f_url, video_id, 'mp4', 'm3u8_native',
+                    m3u8_id='hls', fatal=False))
+                continue
             fmt = {
                 'format_id': format_id,
-                'url': update_url_query(f_url, query),
+                'url': f_url,
+                'source_preference': 1,
             }
             fmt.update(self._FORMATS.get(format_id, {}))
             formats.append(fmt)
-        self._sort_formats(formats)
+        self._sort_formats(formats, ('height', 'width', 'source_preference', 'tbr', 'ext'))
 
         tags = []
         for tag in video_data.get('tags', []):
@@ -118,7 +149,7 @@ class UOLIE(InfoExtractor):
             tags.append(tag_description)
 
         return {
-            'id': video_id,
+            'id': media_id,
             'title': title,
             'description': clean_html(video_data.get('desMedia')),
             'thumbnail': video_data.get('thumbnail'),

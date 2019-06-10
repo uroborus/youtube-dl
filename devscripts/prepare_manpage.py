@@ -8,7 +8,7 @@ import re
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 README_FILE = os.path.join(ROOT_DIR, 'README.md')
 
-PREFIX = '''%YOUTUBE-DL(1)
+PREFIX = r'''%YOUTUBE-DL(1)
 
 # NAME
 
@@ -73,6 +73,7 @@ def filter_options(readme):
             ret += line + '\n'
 
     return ret
+
 
 if __name__ == '__main__':
     main()

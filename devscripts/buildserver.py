@@ -322,7 +322,7 @@ class GITBuilder(GITInfoBuilder):
 
 
 class YoutubeDLBuilder(object):
-    authorizedUsers = ['fraca7', 'phihag', 'rg3', 'FiloSottile']
+    authorizedUsers = ['fraca7', 'phihag', 'rg3', 'FiloSottile', 'ytdl-org']
 
     def __init__(self, **kwargs):
         if self.repoName != 'youtube-dl':
@@ -424,8 +424,6 @@ class BuildHTTPRequestHandler(compat_http_server.BaseHTTPRequestHandler):
                     self.send_header('Content-Length', len(msg))
                     self.end_headers()
                     self.wfile.write(msg)
-                except HTTPError as e:
-                    self.send_response(e.code, str(e))
             else:
                 self.send_response(500, 'Unknown build method "%s"' % action)
         else:

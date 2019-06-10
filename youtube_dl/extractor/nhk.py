@@ -1,50 +1,81 @@
 from __future__ import unicode_literals
 
+import re
+
 from .common import InfoExtractor
 
 
 class NhkVodIE(InfoExtractor):
-    _VALID_URL = r'https?://www3\.nhk\.or\.jp/nhkworld/en/vod/(?P<id>.+?)\.html'
-    _TEST = {
-        # Videos available only for a limited period of time. Visit
-        # http://www3.nhk.or.jp/nhkworld/en/vod/ for working samples.
-        'url': 'http://www3.nhk.or.jp/nhkworld/en/vod/tokyofashion/20160815.html',
-        'info_dict': {
-            'id': 'A1bnNiNTE6nY3jLllS-BIISfcC_PpvF5',
-            'ext': 'flv',
-            'title': 'TOKYO FASHION EXPRESS - The Kimono as Global Fashion',
-            'description': 'md5:db338ee6ce8204f415b754782f819824',
-            'series': 'TOKYO FASHION EXPRESS',
-            'episode': 'The Kimono as Global Fashion',
-        },
-        'skip': 'Videos available only for a limited period of time',
-    }
+    _VALID_URL = r'https?://www3\.nhk\.or\.jp/nhkworld/(?P<lang>[a-z]{2})/ondemand/(?P<type>video|audio)/(?P<id>\d{7}|[a-z]+-\d{8}-\d+)'
+    # Content available only for a limited period of time. Visit
+    # https://www3.nhk.or.jp/nhkworld/en/ondemand/ for working samples.
+    _TESTS = [{
+        'url': 'https://www3.nhk.or.jp/nhkworld/en/ondemand/video/2015173/',
+        'only_matching': True,
+    }, {
+        'url': 'https://www3.nhk.or.jp/nhkworld/en/ondemand/audio/plugin-20190404-1/',
+        'only_matching': True,
+    }, {
+        'url': 'https://www3.nhk.or.jp/nhkworld/fr/ondemand/audio/plugin-20190404-1/',
+        'only_matching': True,
+    }]
+    _API_URL_TEMPLATE = 'https://api.nhk.or.jp/nhkworld/%sodesdlist/v7/episode/%s/%s/all%s.json'
 
     def _real_extract(self, url):
-        video_id = self._match_id(url)
+        lang, m_type, episode_id = re.match(self._VALID_URL, url).groups()
+        if episode_id.isdigit():
+            episode_id = episode_id[:4] + '-' + episode_id[4:]
 
-        webpage = self._download_webpage(url, video_id)
+        is_video = m_type == 'video'
+        episode = self._download_json(
+            self._API_URL_TEMPLATE % ('v' if is_video else 'r', episode_id, lang, '/all' if is_video else ''),
+            episode_id, query={'apikey': 'EJfK8jdS57GqlupFgAfAAwr573q01y6k'})['data']['episodes'][0]
+        title = episode.get('sub_title_clean') or episode['sub_title']
 
-        embed_code = self._search_regex(
-            r'nw_vod_ooplayer\([^,]+,\s*(["\'])(?P<id>(?:(?!\1).)+)\1',
-            webpage, 'ooyala embed code', group='id')
+        def get_clean_field(key):
+            return episode.get(key + '_clean') or episode.get(key)
 
-        title = self._search_regex(
-            r'<div[^>]+class=["\']episode-detail["\']>\s*<h\d+>([^<]+)',
-            webpage, 'title', default=None)
-        description = self._html_search_regex(
-            r'(?s)<p[^>]+class=["\']description["\'][^>]*>(.+?)</p>',
-            webpage, 'description', default=None)
-        series = self._search_regex(
-            r'<h2[^>]+class=["\']detail-top-player-title[^>]+><a[^>]+>([^<]+)',
-            webpage, 'series', default=None)
+        series = get_clean_field('title')
 
-        return {
-            '_type': 'url_transparent',
-            'ie_key': 'Ooyala',
-            'url': 'ooyala:%s' % embed_code,
+        thumbnails = []
+        for s, w, h in [('', 640, 360), ('_l', 1280, 720)]:
+            img_path = episode.get('image' + s)
+            if not img_path:
+                continue
+            thumbnails.append({
+                'id': '%dp' % h,
+                'height': h,
+                'width': w,
+                'url': 'https://www3.nhk.or.jp' + img_path,
+            })
+
+        info = {
+            'id': episode_id + '-' + lang,
             'title': '%s - %s' % (series, title) if series and title else title,
-            'description': description,
+            'description': get_clean_field('description'),
+            'thumbnails': thumbnails,
             'series': series,
             'episode': title,
         }
+        if is_video:
+            info.update({
+                '_type': 'url_transparent',
+                'ie_key': 'Ooyala',
+                'url': 'ooyala:' + episode['vod_id'],
+            })
+        else:
+            audio = episode['audio']
+            audio_path = audio['audio']
+            info['formats'] = self._extract_m3u8_formats(
+                'https://nhks-vh.akamaihd.net/i%s/master.m3u8' % audio_path,
+                episode_id, 'm4a', m3u8_id='hls', fatal=False)
+            for proto in ('rtmpt', 'rtmp'):
+                info['formats'].append({
+                    'ext': 'flv',
+                    'format_id': proto,
+                    'url': '%s://flv.nhk.or.jp/ondemand/mp4:flv%s' % (proto, audio_path),
+                    'vcodec': 'none',
+                })
+            for f in info['formats']:
+                f['language'] = lang
+        return info

@@ -1,14 +1,11 @@
 from __future__ import unicode_literals
 
-import json
-
 from .common import InfoExtractor
 from ..utils import (
     determine_ext,
     clean_html,
     int_or_none,
     float_or_none,
-    sanitized_Request,
 )
 
 
@@ -36,7 +33,7 @@ def _decrypt_config(key, string):
 
 
 class EscapistIE(InfoExtractor):
-    _VALID_URL = r'https?://?(?:www\.)?escapistmagazine\.com/videos/view/[^/?#]+/(?P<id>[0-9]+)-[^/?#]*(?:$|[?#])'
+    _VALID_URL = r'https?://?(?:(?:www|v1)\.)?escapistmagazine\.com/videos/view/[^/]+/(?P<id>[0-9]+)'
     _TESTS = [{
         'url': 'http://www.escapistmagazine.com/videos/view/the-escapist-presents/6618-Breaking-Down-Baldurs-Gate',
         'md5': 'ab3a706c681efca53f0a35f1415cf0d1',
@@ -45,7 +42,7 @@ class EscapistIE(InfoExtractor):
             'ext': 'mp4',
             'description': "Baldur's Gate: Original, Modded or Enhanced Edition? I'll break down what you can expect from the new Baldur's Gate: Enhanced Edition.",
             'title': "Breaking Down Baldur's Gate",
-            'thumbnail': 're:^https?://.*\.jpg$',
+            'thumbnail': r're:^https?://.*\.jpg$',
             'duration': 264,
             'uploader': 'The Escapist',
         }
@@ -57,10 +54,16 @@ class EscapistIE(InfoExtractor):
             'ext': 'mp4',
             'description': 'This week, Zero Punctuation reviews Evolve.',
             'title': 'Evolve - One vs Multiplayer',
-            'thumbnail': 're:^https?://.*\.jpg$',
+            'thumbnail': r're:^https?://.*\.jpg$',
             'duration': 304,
             'uploader': 'The Escapist',
         }
+    }, {
+        'url': 'http://escapistmagazine.com/videos/view/the-escapist-presents/6618',
+        'only_matching': True,
+    }, {
+        'url': 'https://v1.escapistmagazine.com/videos/view/the-escapist-presents/6618-Breaking-Down-Baldurs-Gate',
+        'only_matching': True,
     }]
 
     def _real_extract(self, url):
@@ -74,19 +77,20 @@ class EscapistIE(InfoExtractor):
         video_id = ims_video['videoID']
         key = ims_video['hash']
 
-        config_req = sanitized_Request(
-            'http://www.escapistmagazine.com/videos/'
-            'vidconfig.php?videoID=%s&hash=%s' % (video_id, key))
-        config_req.add_header('Referer', url)
-        config = self._download_webpage(config_req, video_id, 'Downloading video config')
+        config = self._download_webpage(
+            'http://www.escapistmagazine.com/videos/vidconfig.php',
+            video_id, 'Downloading video config', headers={
+                'Referer': url,
+            }, query={
+                'videoID': video_id,
+                'hash': key,
+            })
 
-        data = json.loads(_decrypt_config(key, config))
+        data = self._parse_json(_decrypt_config(key, config), video_id)
 
         video_data = data['videoData']
 
         title = clean_html(video_data['title'])
-        duration = float_or_none(video_data.get('duration'), 1000)
-        uploader = video_data.get('publisher')
 
         formats = [{
             'url': video['src'],
@@ -99,8 +103,9 @@ class EscapistIE(InfoExtractor):
             'id': video_id,
             'formats': formats,
             'title': title,
-            'thumbnail': self._og_search_thumbnail(webpage),
+            'thumbnail': self._og_search_thumbnail(webpage) or data.get('poster'),
             'description': self._og_search_description(webpage),
-            'duration': duration,
-            'uploader': uploader,
+            'duration': float_or_none(video_data.get('duration'), 1000),
+            'uploader': video_data.get('publisher'),
+            'series': video_data.get('show'),
         }

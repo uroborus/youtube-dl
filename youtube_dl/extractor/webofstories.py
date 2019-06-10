@@ -4,7 +4,10 @@ from __future__ import unicode_literals
 import re
 
 from .common import InfoExtractor
-from ..utils import int_or_none
+from ..utils import (
+    int_or_none,
+    orderedSet,
+)
 
 
 class WebOfStoriesIE(InfoExtractor):
@@ -19,7 +22,7 @@ class WebOfStoriesIE(InfoExtractor):
             'id': '4536',
             'ext': 'mp4',
             'title': 'The temperature of the sun',
-            'thumbnail': 're:^https?://.*\.jpg$',
+            'thumbnail': r're:^https?://.*\.jpg$',
             'description': 'Hans Bethe talks about calculating the temperature of the sun',
             'duration': 238,
         }
@@ -30,7 +33,7 @@ class WebOfStoriesIE(InfoExtractor):
             'id': '55908',
             'ext': 'mp4',
             'title': 'The story of Gemmata obscuriglobus',
-            'thumbnail': 're:^https?://.*\.jpg$',
+            'thumbnail': r're:^https?://.*\.jpg$',
             'description': 'Planctomycete talks about The story of Gemmata obscuriglobus',
             'duration': 169,
         },
@@ -42,7 +45,7 @@ class WebOfStoriesIE(InfoExtractor):
             'id': '54215',
             'ext': 'mp4',
             'title': '"A Leg to Stand On"',
-            'thumbnail': 're:^https?://.*\.jpg$',
+            'thumbnail': r're:^https?://.*\.jpg$',
             'description': 'Oliver Sacks talks about the death and resurrection of a limb',
             'duration': 97,
         },
@@ -133,8 +136,10 @@ class WebOfStoriesPlaylistIE(InfoExtractor):
         webpage = self._download_webpage(url, playlist_id)
 
         entries = [
-            self.url_result('http://www.webofstories.com/play/%s' % video_number, 'WebOfStories')
-            for video_number in set(re.findall('href="/playAll/%s\?sId=(\d+)"' % playlist_id, webpage))
+            self.url_result(
+                'http://www.webofstories.com/play/%s' % video_id,
+                'WebOfStories', video_id=video_id)
+            for video_id in orderedSet(re.findall(r'\bid=["\']td_(\d+)', webpage))
         ]
 
         title = self._search_regex(

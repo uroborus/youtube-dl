@@ -25,7 +25,8 @@ class AddAnimeIE(InfoExtractor):
             'ext': 'mp4',
             'description': 'One Piece 606',
             'title': 'One Piece 606',
-        }
+        },
+        'skip': 'Video is gone',
     }, {
         'url': 'http://add-anime.net/video/MDUGWYKNGBD8/One-Piece-687',
         'only_matching': True,
@@ -58,9 +59,9 @@ class AddAnimeIE(InfoExtractor):
             parsed_url = compat_urllib_parse_urlparse(url)
             av_val = av_res + len(parsed_url.netloc)
             confirm_url = (
-                parsed_url.scheme + '://' + parsed_url.netloc +
-                action + '?' +
-                compat_urllib_parse_urlencode({
+                parsed_url.scheme + '://' + parsed_url.netloc
+                + action + '?'
+                + compat_urllib_parse_urlencode({
                     'jschl_vc': vc, 'jschl_answer': compat_str(av_val)}))
             self._download_webpage(
                 confirm_url, video_id,

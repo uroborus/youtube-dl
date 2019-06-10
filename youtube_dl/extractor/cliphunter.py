@@ -1,19 +1,10 @@
 from __future__ import unicode_literals
 
 from .common import InfoExtractor
-from ..utils import int_or_none
-
-
-_translation_table = {
-    'a': 'h', 'd': 'e', 'e': 'v', 'f': 'o', 'g': 'f', 'i': 'd', 'l': 'n',
-    'm': 'a', 'n': 'm', 'p': 'u', 'q': 't', 'r': 's', 'v': 'p', 'x': 'r',
-    'y': 'l', 'z': 'i',
-    '$': ':', '&': '.', '(': '=', '^': '&', '=': '/',
-}
-
-
-def _decode(s):
-    return ''.join(_translation_table.get(c, c) for c in s)
+from ..utils import (
+    int_or_none,
+    url_or_none,
+)
 
 
 class CliphunterIE(InfoExtractor):
@@ -30,7 +21,7 @@ class CliphunterIE(InfoExtractor):
             'id': '1012420',
             'ext': 'flv',
             'title': 'Fun Jynx Maze solo',
-            'thumbnail': 're:^https?://.*\.jpg$',
+            'thumbnail': r're:^https?://.*\.jpg$',
             'age_limit': 18,
         },
         'skip': 'Video gone',
@@ -41,7 +32,7 @@ class CliphunterIE(InfoExtractor):
             'id': '2019449',
             'ext': 'mp4',
             'title': 'ShesNew - My booty girlfriend, Victoria Paradice\'s pussy filled with jizz',
-            'thumbnail': 're:^https?://.*\.jpg$',
+            'thumbnail': r're:^https?://.*\.jpg$',
             'age_limit': 18,
         },
     }]
@@ -60,14 +51,14 @@ class CliphunterIE(InfoExtractor):
 
         formats = []
         for format_id, f in gexo_files.items():
-            video_url = f.get('url')
+            video_url = url_or_none(f.get('url'))
             if not video_url:
                 continue
             fmt = f.get('fmt')
             height = f.get('h')
             format_id = '%s_%sp' % (fmt, height) if fmt and height else format_id
             formats.append({
-                'url': _decode(video_url),
+                'url': video_url,
                 'format_id': format_id,
                 'width': int_or_none(f.get('w')),
                 'height': int_or_none(height),

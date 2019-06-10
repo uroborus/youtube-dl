@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+# coding: utf-8
 from __future__ import unicode_literals
 
 import re
@@ -32,12 +32,24 @@ _x = lambda p: xpath_with_ns(p, {'smil': default_ns})
 
 
 class ThePlatformBaseIE(OnceIE):
+    _TP_TLD = 'com'
+
     def _extract_theplatform_smil(self, smil_url, video_id, note='Downloading SMIL data'):
-        meta = self._download_xml(smil_url, video_id, note=note, query={'format': 'SMIL'})
+        meta = self._download_xml(
+            smil_url, video_id, note=note, query={'format': 'SMIL'},
+            headers=self.geo_verification_headers())
         error_element = find_xpath_attr(meta, _x('.//smil:ref'), 'src')
-        if error_element is not None and error_element.attrib['src'].startswith(
-                'http://link.theplatform.com/s/errorFiles/Unavailable.'):
-            raise ExtractorError(error_element.attrib['abstract'], expected=True)
+        if error_element is not None:
+            exception = find_xpath_attr(
+                error_element, _x('.//smil:param'), 'name', 'exception')
+            if exception is not None:
+                if exception.get('value') == 'GeoLocationBlocked':
+                    self.raise_geo_restricted(error_element.attrib['abstract'])
+                elif error_element.attrib['src'].startswith(
+                        'http://link.theplatform.%s/s/errorFiles/Unavailable.'
+                        % self._TP_TLD):
+                    raise ExtractorError(
+                        error_element.attrib['abstract'], expected=True)
 
         smil_formats = self._parse_smil_formats(
             meta, smil_url, video_id, namespace=default_ns,
@@ -64,7 +76,7 @@ class ThePlatformBaseIE(OnceIE):
         return formats, subtitles
 
     def _download_theplatform_metadata(self, path, video_id):
-        info_url = 'http://link.theplatform.com/s/%s?format=preview' % path
+        info_url = 'http://link.theplatform.%s/s/%s?format=preview' % (self._TP_TLD, path)
         return self._download_json(info_url, video_id)
 
     def _parse_theplatform_metadata(self, info):
@@ -78,14 +90,33 @@ class ThePlatformBaseIE(OnceIE):
                     'url': src,
                 })
 
+        duration = info.get('duration')
+        tp_chapters = info.get('chapters', [])
+        chapters = []
+        if tp_chapters:
+            def _add_chapter(start_time, end_time):
+                start_time = float_or_none(start_time, 1000)
+                end_time = float_or_none(end_time, 1000)
+                if start_time is None or end_time is None:
+                    return
+                chapters.append({
+                    'start_time': start_time,
+                    'end_time': end_time,
+                })
+
+            for chapter in tp_chapters[:-1]:
+                _add_chapter(chapter.get('startTime'), chapter.get('endTime'))
+            _add_chapter(tp_chapters[-1].get('startTime'), tp_chapters[-1].get('endTime') or duration)
+
         return {
             'title': info['title'],
             'subtitles': subtitles,
             'description': info['description'],
             'thumbnail': info['defaultThumbnailUrl'],
-            'duration': int_or_none(info.get('duration'), 1000),
+            'duration': float_or_none(duration, 1000),
             'timestamp': int_or_none(info.get('pubDate'), 1000) or None,
             'uploader': info.get('billingCode'),
+            'chapters': chapters,
         }
 
     def _extract_theplatform_metadata(self, path, video_id):
@@ -96,7 +127,7 @@ class ThePlatformBaseIE(OnceIE):
 class ThePlatformIE(ThePlatformBaseIE, AdobePassIE):
     _VALID_URL = r'''(?x)
         (?:https?://(?:link|player)\.theplatform\.com/[sp]/(?P<provider_id>[^/]+)/
-           (?:(?:(?:[^/]+/)+select/)?(?P<media>media/(?:guid/\d+/)?)|(?P<config>(?:[^/\?]+/(?:swf|config)|onsite)/select/))?
+           (?:(?:(?:[^/]+/)+select/)?(?P<media>media/(?:guid/\d+/)?)?|(?P<config>(?:[^/\?]+/(?:swf|config)|onsite)/select/))?
          |theplatform:)(?P<id>[^/\?&]+)'''
 
     _TESTS = [{
@@ -116,6 +147,7 @@ class ThePlatformIE(ThePlatformBaseIE, AdobePassIE):
             # rtmp download
             'skip_download': True,
         },
+        'skip': '404 Not Found',
     }, {
         # from http://www.cnet.com/videos/tesla-model-s-a-second-step-towards-a-cleaner-motoring-future/
         'url': 'http://link.theplatform.com/s/kYEXFC/22d_qsQ6MIRT',
@@ -153,7 +185,7 @@ class ThePlatformIE(ThePlatformBaseIE, AdobePassIE):
             'title': 'iPhone Siri’s sassy response to a math question has people talking',
             'description': 'md5:a565d1deadd5086f3331d57298ec6333',
             'duration': 83.0,
-            'thumbnail': 're:^https?://.*\.jpg$',
+            'thumbnail': r're:^https?://.*\.jpg$',
             'timestamp': 1435752600,
             'upload_date': '20150701',
             'uploader': 'NBCU-NEWS',
@@ -176,10 +208,12 @@ class ThePlatformIE(ThePlatformBaseIE, AdobePassIE):
         if m:
             return [m.group('url')]
 
+        # Are whitesapces ignored in URLs?
+        # https://github.com/ytdl-org/youtube-dl/issues/12044
         matches = re.findall(
-            r'<(?:iframe|script)[^>]+src=(["\'])((?:https?:)?//player\.theplatform\.com/p/.+?)\1', webpage)
+            r'(?s)<(?:iframe|script)[^>]+src=(["\'])((?:https?:)?//player\.theplatform\.com/p/.+?)\1', webpage)
         if matches:
-            return list(zip(*matches))[1]
+            return [re.sub(r'\s', '', list(zip(*matches))[1][0])]
 
     @staticmethod
     def _sign_url(url, sig_key, sig_secret, life=600, include_qs=False):
@@ -192,7 +226,7 @@ class ThePlatformIE(ThePlatformBaseIE, AdobePassIE):
         def hex_to_bytes(hex):
             return binascii.a2b_hex(hex.encode('ascii'))
 
-        relative_path = re.match(r'https?://link.theplatform.com/s/([^?]+)', url).group(1)
+        relative_path = re.match(r'https?://link\.theplatform\.com/s/([^?]+)', url).group(1)
         clear_text = hex_to_bytes(flags + expiration_date + str_to_hex(relative_path))
         checksum = hmac.new(sig_key.encode('ascii'), clear_text, hashlib.sha1).hexdigest()
         sig = flags + expiration_date + checksum + str_to_hex(sig_secret)
@@ -237,7 +271,7 @@ class ThePlatformIE(ThePlatformBaseIE, AdobePassIE):
 
         if smuggled_data.get('force_smil_url', False):
             smil_url = url
-        # Explicitly specified SMIL (see https://github.com/rg3/youtube-dl/issues/7385)
+        # Explicitly specified SMIL (see https://github.com/ytdl-org/youtube-dl/issues/7385)
         elif '/guid/' in url:
             headers = {}
             source_url = smuggled_data.get('source_url')
@@ -284,7 +318,7 @@ class ThePlatformIE(ThePlatformBaseIE, AdobePassIE):
 
 class ThePlatformFeedIE(ThePlatformBaseIE):
     _URL_TEMPLATE = '%s//feed.theplatform.com/f/%s/%s?form=json&%s'
-    _VALID_URL = r'https?://feed\.theplatform\.com/f/(?P<provider_id>[^/]+)/(?P<feed_id>[^?/]+)\?(?:[^&]+&)*(?P<filter>by(?:Gui|I)d=(?P<id>[\w-]+))'
+    _VALID_URL = r'https?://feed\.theplatform\.com/f/(?P<provider_id>[^/]+)/(?P<feed_id>[^?/]+)\?(?:[^&]+&)*(?P<filter>by(?:Gui|I)d=(?P<id>[^&]+))'
     _TESTS = [{
         # From http://player.theplatform.com/p/7wvmTC/MSNBCEmbeddedOffSite?guid=n_hardball_5biden_140207
         'url': 'http://feed.theplatform.com/f/7wvmTC/msnbc_video-p-test?form=json&pretty=true&range=-40&byGuid=n_hardball_5biden_140207',
@@ -294,18 +328,22 @@ class ThePlatformFeedIE(ThePlatformBaseIE):
             'ext': 'mp4',
             'title': 'The Biden factor: will Joe run in 2016?',
             'description': 'Could Vice President Joe Biden be preparing a 2016 campaign? Mark Halperin and Sam Stein weigh in.',
-            'thumbnail': 're:^https?://.*\.jpg$',
+            'thumbnail': r're:^https?://.*\.jpg$',
             'upload_date': '20140208',
             'timestamp': 1391824260,
             'duration': 467.0,
             'categories': ['MSNBC/Issues/Democrats', 'MSNBC/Issues/Elections/Election 2016'],
             'uploader': 'NBCU-NEWS',
         },
+    }, {
+        'url': 'http://feed.theplatform.com/f/2E2eJC/nnd_NBCNews?byGuid=nn_netcast_180306.Copy.01',
+        'only_matching': True,
     }]
 
-    def _extract_feed_info(self, provider_id, feed_id, filter_query, video_id, custom_fields=None, asset_types_query={}):
+    def _extract_feed_info(self, provider_id, feed_id, filter_query, video_id, custom_fields=None, asset_types_query={}, account_id=None):
         real_url = self._URL_TEMPLATE % (self.http_scheme(), provider_id, feed_id, filter_query)
         entry = self._download_json(real_url, video_id)['entries'][0]
+        main_smil_url = 'http://link.theplatform.com/s/%s/media/guid/%d/%s' % (provider_id, account_id, entry['guid']) if account_id else entry.get('plmedia$publicUrl')
 
         formats = []
         subtitles = {}
@@ -318,7 +356,8 @@ class ThePlatformFeedIE(ThePlatformBaseIE):
             if first_video_id is None:
                 first_video_id = cur_video_id
                 duration = float_or_none(item.get('plfile$duration'))
-            for asset_type in item['plfile$assetTypes']:
+            file_asset_types = item.get('plfile$assetTypes') or compat_parse_qs(compat_urllib_parse_urlparse(smil_url).query)['assetTypes']
+            for asset_type in file_asset_types:
                 if asset_type in asset_types:
                     continue
                 asset_types.append(asset_type)
@@ -330,7 +369,7 @@ class ThePlatformFeedIE(ThePlatformBaseIE):
                 if asset_type in asset_types_query:
                     query.update(asset_types_query[asset_type])
                 cur_formats, cur_subtitles = self._extract_theplatform_smil(update_url_query(
-                    smil_url, query), video_id, 'Downloading SMIL data for %s' % asset_type)
+                    main_smil_url or smil_url, query), video_id, 'Downloading SMIL data for %s' % asset_type)
                 formats.extend(cur_formats)
                 subtitles = self._merge_subtitles(subtitles, cur_subtitles)
 
